@@ -184,8 +184,11 @@ print("PQ column buses:", PQ_column_dict)
 # Convert Ybus into magnitude and angle values necessary for powerflow equations
 Ybus_magnitude = np.abs(Ybus)
 Ybus_angle = np.angle(Ybus)
-print("Magnitude of the Ybus:\n", Ybus_magnitude)
-print("Angle of the Ybus in rad:\n", Ybus_angle)
+bus_names = list(Y_dict.keys())
+Ybus_magnitude_df = pd.DataFrame(Ybus_magnitude, index=bus_names, columns=bus_names)
+Ybus_angle_df = pd.DataFrame(Ybus_angle, index=bus_names, columns=bus_names)
+print("Magnitude of the Ybus:\n", Ybus_magnitude_df)
+print("Angle of the Ybus in rad:\n", Ybus_angle_df)
 
 # Flat start initialization - set all bus voltages to 1.0pu and angles to 0
 # creating a Voltage array of magnitude 1 size of # of buses
@@ -220,7 +223,11 @@ for bus_k, k in non_slack_dict.items():     # Size N_nonslack
             # compute J1[k][k] On Diagonal
             # each off diagonal pair contributes to the on diagonal calc. So it's the same calc, just summing the offdiagonal values to the on diagonals values for each pair.
             J1[k][k] -= J1_kn # Store the value in the correct NONSLACK index since we only calc nonslack voltages and angles.
-print("Jacobian 1 matrix:\n", J1)
+#print("Jacobian 1 matrix:\n", J1)
+bus_names = list(non_slack_dict.keys())
+J1_df = pd.DataFrame(J1, index=bus_names, columns=bus_names)
+print("The J1 Jacobian: \n", J1_df)
+
 
 # ------- 3b) Construct J2 - P-V -----------------------------------------
 # dP/dvoltage - P equations for every non-slack bus. Voltage unknowns for all PQ buses since PV buses have known voltage.
@@ -249,25 +256,104 @@ for bus_k, k in non_slack_dict.items(): # Size N_nonslack
             # compute J1[k][k] On Diagonal
             # each off diagonal pair contributes to the on diagonal calc. So it's the same calc, just summing the offdiagonal values to the on diagonals values for each pair.
             # Index the columns correctly for the 'diagonal' calc. No longer a square matrix. N_nonslack x N_PQ
-            if bus_k in PQ_column_dict:
-                n_col = PQ_column_dict[bus_k]
-                J2[k][n_col] += J2_kn # Store the value in the correct NONSLACK index since we only calc nonslack voltages and angles.
-    
+    if bus_k in PQ_column_dict:
+        n_col = PQ_column_dict[bus_k]
+        for bus_n2, k2 in non_slack_dict.items():
+            if bus_k != bus_n2:
+                yk = Y_dict[bus_k] # Index to Y_dict same indexing scheme as V and delta arrays. 
+                yn2 = Y_dict[bus_n2] # Index to Y_dict same indexing scheme as V and delta arrays. 
+                V_k = V[yk] # lookup V for yk
+                V_n2 = V[yn2] # lookup V for yk
+                delta_k = delta[yk]
+                delta_n2 = delta[yn2]
+                Y_kn2 = Ybus_magnitude[yk][yn2]
+                theta_kn2 = Ybus_angle[yk][yn2]
+                J2_kn2 = V_k * Y_kn2 * V_n2 * np.cos(delta_k - delta_n2 - theta_kn2)
+                J2[k][n_col] += J2_kn2
+
     ## for J2, we have an extra term out front of the summation, so we need to add that only once for the entire diagonal term
     if bus_k in PQ_column_dict: # only PQ buses have a diagonal element
         yk = Y_dict[bus_k]
         n_col = PQ_column_dict[bus_k]
         J2[k][n_col] += V[yk] * Ybus_magnitude[yk][yk] * np.cos(Ybus_angle[yk][yk])
-print("Jacobian 2 matrix:\n", J2)
 
-print(Ybus.real)
+bus_row_names = list(non_slack_dict.keys())
+bus_column_names = list(PQ_column_dict.keys())
+J2_df = pd.DataFrame(J2, index=bus_row_names, columns=bus_column_names)
+print("The J2 Jacobian: \n", J2_df)
+
+#bus_names = list(Y_dict.keys())
+#Ybus_df = pd.DataFrame(Ybus.real, index=bus_names, columns=bus_names)
+#print("Real part of Y matrix: \n", Ybus_df)
+
 
 # ------- 3c) Construct J3 - Q-delta -------------------------------------
 # dQ/ddelta - Q equations for all PQ buses. PV buses have fixed voltage so don't write a Q mismatch for them. Delta unknowns for all non-slack buses.
 # J3 size is N_PQ x N_nonslack
+# loop through every possible combination of k and n and use appropriate equation for on vs off diagonals
+
+J3 = np.zeros((len(PQ_dict), len(non_slack_dict)))
+
+for bus_k, k in PQ_column_dict.items():     # Size N_nonslack
+    for bus_n, n in non_slack_dict.items(): # Size N_nonslack
+        if bus_k != bus_n: # off diagonal
+            yk = Y_dict[bus_k] # Index to Y_dict same indexing scheme as V and delta arrays. 
+            yn = Y_dict[bus_n] # Index to Y_dict same indexing scheme as V and delta arrays. 
+
+            V_k = V[yk] # lookup V for yk
+            V_n = V[yn] # lookup V for yn
+            delta_k = delta[yk] # lookup delta for yk
+            delta_n = delta[yn] # lookup delta for yn
+
+            Y_kn = Ybus_magnitude[yk][yn]
+            theta_kn = Ybus_angle[yk][yn]
+            # compute J1[k][n]
+            J3_kn = -V_k*Y_kn*V_n*np.cos(delta_k - delta_n - theta_kn)
+            J3[k][n] = J3_kn # Store the value in the correct NONSLACK index since we only calc nonslack voltages and angles.
+
+            # compute J1[k][k] On Diagonal
+            # each off diagonal pair contributes to the on diagonal calc. So it's the same calc, just summing the offdiagonal values to the on diagonals values for each pair.
+            n_col = non_slack_dict[bus_k]
+            J3[k][n_col] -= J3_kn # Store the value in the correct NONSLACK index since we only calc nonslack voltages and angles.
+
+bus_row_names = list(PQ_column_dict.keys())
+bus_column_names = list(non_slack_dict.keys())
+J3_df = pd.DataFrame(J3, index=bus_row_names, columns=bus_column_names)
+print("The J3 Jacobian: \n", J3_df)
+
 
 # ------- 3d) Construct J4 - Q-V -----------------------------------------
 # dQ/dvoltage - Q equations for all PQ buses. Voltage unknowns for all PQ buses
 # J4 size is N_PQ x N_PQ
+J4 = np.zeros((len(PQ_dict), len(PQ_dict)))
 
+# loop through every possible combination of k and n and use appropriate equation for on vs off diagonals
+for bus_k, k in PQ_column_dict.items(): # Size N_nonslack
+    for bus_n, n in PQ_column_dict.items():    # Size N_PQ
+        if bus_k != bus_n: # off diagonal
+            yk = Y_dict[bus_k] # Index to Y_dict same indexing scheme as V and delta arrays. 
+            yn = Y_dict[bus_n] # Index to Y_dict same indexing scheme as V and delta arrays. 
+
+            V_k = V[yk] # lookup V for yk
+            V_n = V[yn] # lookup V for yn
+            delta_k = delta[yk] # lookup delta for yk
+            delta_n = delta[yn] # lookup delta for yn
+
+            Y_kn = Ybus_magnitude[yk][yn]
+            theta_kn = Ybus_angle[yk][yn]
+            # compute J1[k][n]
+            J4_kn = V_k*Y_kn*V_n*np.sin(delta_k - delta_n - theta_kn)
+            J4[k][n] = J4_kn # Store the value in the correct NONSLACK index since we only calc nonslack voltages and angles.
+
+            J4[k][k] += J4_kn
+
+    ## for J2, we have an extra term out front of the summation, so we need to add that only once for the entire diagonal term
+    if bus_k in PQ_column_dict: # only PQ buses have a diagonal element
+        yk = Y_dict[bus_k]
+        J4[k][k] += -V[yk] * Ybus_magnitude[yk][yk] * np.sin(Ybus_angle[yk][yk])
+
+bus_row_names = list(PQ_column_dict.keys())
+bus_column_names = list(PQ_column_dict.keys())
+J4_df = pd.DataFrame(J4, index=bus_row_names, columns=bus_column_names)
+print("The J4 Jacobian: \n", J4_df)
 
